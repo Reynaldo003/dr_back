@@ -26,12 +26,18 @@ SECRET_KEY = 'django-insecure-&(mvu21^opwq5ltyi_xx0+@%ya!w$-o@6r^a7-)*l*s035@rg-
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ["127.0.0.1", "localhost", "bce0-2806-10a6-24-22ca-b1f7-ce83-a6d1-d1ca.ngrok-free.app"]
+ALLOWED_HOSTS = ["127.0.0.1", "localhost", "misdosreynas.com", "www.misdosreynas.com"]
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-    "https://bce0-2806-10a6-24-22ca-b1f7-ce83-a6d1-d1ca.ngrok-free.app",
+    "https://misdosreynas.com",
+    "https://www.misdosreynas.com",
+]
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://misdosreynas.com",
+    "https://www.misdosreynas.com",
 ]
 
 REST_FRAMEWORK = {
@@ -96,10 +102,10 @@ WSGI_APPLICATION = 'dr_back.wsgi.application'
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": "dos_reynas",
-        "USER": "postgres",
-        "PASSWORD": "1234",
-        "HOST": "localhost",
+        "NAME": "misdosreynas_db",
+        "USER": "misdosreynas_user",
+        "PASSWORD": "misDosReynas",
+        "HOST": "127.0.0.1",
         "PORT": "5432",
     },
 }
@@ -139,7 +145,11 @@ USE_TZ = False
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
+STATIC_ROOT = "/var/www/misdosreynas/dr_back/staticfiles"
+
+MEDIA_URL = "/media/"
+MEDIA_URL = "/media/"
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -150,3 +160,4 @@ MP_BACK_URL_PENDING="http://localhost:5173/checkout/pending"
 MP_BACK_URL_FAILURE="http://localhost:5173/checkout/failure"
 MP_NOTIFICATION_URL="https://tu-dominio-o-ngrok/api/pagos/mercado-pago/webhook/"
 MP_WEBHOOK_SECRET=""
+
