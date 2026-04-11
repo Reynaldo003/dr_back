@@ -24,7 +24,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-&(mvu21^opwq5ltyi_xx0+@%ya!w$-o@6r^a7-)*l*s035@rg-'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
 ALLOWED_HOSTS = ["127.0.0.1", "localhost", "misdosreynas.com", "www.misdosreynas.com"]
 
@@ -155,9 +155,9 @@ MEDIA_URL = "/media/"
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 MP_ACCESS_TOKEN="TEST-2278630088070175-031911-6c90d99d17bfeeb539fbc1fc024d9bd4-413781991"
-MP_BACK_URL_SUCCESS="http://localhost:5173/checkout/success"
-MP_BACK_URL_PENDING="http://localhost:5173/checkout/pending"
-MP_BACK_URL_FAILURE="http://localhost:5173/checkout/failure"
-MP_NOTIFICATION_URL="https://tu-dominio-o-ngrok/api/pagos/mercado-pago/webhook/"
-MP_WEBHOOK_SECRET=""
+MP_BACK_URL_SUCCESS="https://misdosreynas.com/checkout/success"
+MP_BACK_URL_PENDING="https://misdosreynas.com/checkout/pending"
+MP_BACK_URL_FAILURE="https://misdosreynas.com/checkout/failure"
+MP_NOTIFICATION_URL="https://misdosreynas.com/api/pagos/mercado-pago/webhook/"
+MP_WEBHOOK_SECRET="f24381292128f382a8a0b9616a91d2a0b2d8335aefdb5e0e390d36c652defa33"
 

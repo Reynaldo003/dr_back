@@ -1,3 +1,4 @@
+#ventas/models.py
 import uuid
 from datetime import date
 from decimal import Decimal
