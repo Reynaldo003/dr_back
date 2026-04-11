@@ -4,7 +4,6 @@ from rest_framework import serializers
 
 from clientes.models import Cliente, ClienteDireccion
 from productos.models import Producto, VarianteProducto
-from productos.serializers import ProductoSerializer
 
 from .models import Venta, VentaDetalle
 
@@ -29,9 +28,15 @@ def calcular_costo_envio(tipo_envio, subtotal):
     return ENVIO_TARIFAS[tipo_envio]
 
 
+class ProductoVentaResumenSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Producto
+        fields = ["id", "titulo", "sku", "imagen_principal"]
+
+
 class VentaDetalleSerializer(serializers.ModelSerializer):
     producto_id = serializers.IntegerField(write_only=True)
-    producto = ProductoSerializer(read_only=True)
+    producto = ProductoVentaResumenSerializer(read_only=True)
 
     class Meta:
         model = VentaDetalle
@@ -217,24 +222,41 @@ class VentaSerializer(serializers.ModelSerializer):
 
     def _crear_detalles_y_totales(self, venta, detalles_data):
         subtotal = Decimal("0.00")
+        producto_ids = {item["producto_id"] for item in detalles_data}
+        productos = {
+            p.id: p
+            for p in Producto.objects.filter(id__in=producto_ids)
+        }
+
+        detalles = []
 
         for item in detalles_data:
-            producto = Producto.objects.get(pk=item["producto_id"])
+            producto = productos.get(item["producto_id"])
+            if not producto:
+                raise serializers.ValidationError(
+                    f"El producto {item['producto_id']} no existe."
+                )
+
             cantidad = int(item["cantidad"])
             precio_unitario = Decimal(str(producto.precio_final))
             subtotal_linea = precio_unitario * cantidad
 
-            VentaDetalle.objects.create(
-                venta=venta,
-                producto=producto,
-                color=item.get("color", "").strip(),
-                talla=item.get("talla", "").strip(),
-                cantidad=cantidad,
-                precio_unitario=precio_unitario,
-                subtotal=subtotal_linea,
+            detalles.append(
+                VentaDetalle(
+                    venta=venta,
+                    producto=producto,
+                    color=str(item.get("color") or "").strip(),
+                    talla=str(item.get("talla") or "").strip(),
+                    cantidad=cantidad,
+                    precio_unitario=precio_unitario,
+                    subtotal=subtotal_linea,
+                )
             )
 
             subtotal += subtotal_linea
+
+        if detalles:
+            VentaDetalle.objects.bulk_create(detalles)
 
         venta.subtotal = subtotal
         venta.total = subtotal + Decimal(str(venta.costo_envio or 0))
@@ -454,21 +476,28 @@ class CheckoutMercadoPagoSerializer(serializers.Serializer):
             **validated_data,
         )
 
+        detalles = []
+
         for item in detalles_data:
             producto = productos[item["producto_id"]]
             cantidad = int(item["cantidad"])
             precio_unitario = Decimal(str(producto.precio_final))
             subtotal_linea = precio_unitario * cantidad
 
-            VentaDetalle.objects.create(
-                venta=venta,
-                producto=producto,
-                color=item.get("color", "").strip(),
-                talla=item.get("talla", "").strip(),
-                cantidad=cantidad,
-                precio_unitario=precio_unitario,
-                subtotal=subtotal_linea,
+            detalles.append(
+                VentaDetalle(
+                    venta=venta,
+                    producto=producto,
+                    color=item.get("color", "").strip(),
+                    talla=item.get("talla", "").strip(),
+                    cantidad=cantidad,
+                    precio_unitario=precio_unitario,
+                    subtotal=subtotal_linea,
+                )
             )
+
+        if detalles:
+            VentaDetalle.objects.bulk_create(detalles)
 
         venta.subtotal = subtotal
         venta.total = subtotal + costo_envio

@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django.db import models
 from django.db.models import Sum
+from django.db.models.functions import Coalesce
 
 
 class Producto(models.Model):
@@ -46,7 +47,18 @@ class Producto(models.Model):
 
     @property
     def stock_total(self):
-        total = self.variantes.aggregate(total=Sum("stock")).get("total")
+        stock_anotado = getattr(self, "_stock_total", None)
+        if stock_anotado is not None:
+            return int(stock_anotado or 0)
+
+        cache_prefetch = getattr(self, "_prefetched_objects_cache", {})
+        variantes_prefetch = cache_prefetch.get("variantes")
+        if variantes_prefetch is not None:
+            return int(sum(int(v.stock or 0) for v in variantes_prefetch))
+
+        total = self.variantes.aggregate(
+            total=Coalesce(Sum("stock"), 0)
+        ).get("total")
         return int(total or 0)
 
     @property

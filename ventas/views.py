@@ -1,6 +1,5 @@
-#ventas/views.py
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Prefetch, Q
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import AllowAny
@@ -10,7 +9,7 @@ from rest_framework.views import APIView
 from clientes.authentication import ClienteAuthentication
 from dr_back.admin_auth import AdminAuthentication, IsAdminPanelUser
 
-from .models import Venta
+from .models import Venta, VentaDetalle
 from .serializers import CheckoutMercadoPagoSerializer, VentaSerializer
 from .services import (
     MercadoPagoError,
@@ -23,18 +22,24 @@ from .services import (
 
 
 class VentaViewSet(viewsets.ModelViewSet):
-    queryset = (
-        Venta.objects
-        .select_related("cliente_usuario", "cliente_direccion")
-        .prefetch_related("detalles__producto")
-        .all()
-    )
     serializer_class = VentaSerializer
     authentication_classes = [AdminAuthentication]
     permission_classes = [IsAdminPanelUser]
 
+    queryset = (
+        Venta.objects
+        .select_related("cliente_usuario", "cliente_direccion")
+        .prefetch_related(
+            Prefetch(
+                "detalles",
+                queryset=VentaDetalle.objects.select_related("producto").order_by("id"),
+            )
+        )
+        .all()
+    )
+
     def get_queryset(self):
-        queryset = self.queryset.order_by("-id")
+        queryset = self.queryset.defer("mp_raw").order_by("-id")
 
         q = self.request.query_params.get("q", "").strip()
         estado = self.request.query_params.get("estado", "").strip().upper()

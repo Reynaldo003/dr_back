@@ -6,7 +6,7 @@ import requests
 from django.conf import settings
 from django.db import transaction
 
-from productos.models import Producto, VarianteProducto
+from productos.models import VarianteProducto
 
 from .models import Venta
 
@@ -26,8 +26,6 @@ def descontar_inventario_si_aplica(venta: Venta):
 
     if venta.estado != "PAGADA":
         return
-
-    productos_afectados = set()
 
     for detalle in venta.detalles.select_related("producto").all():
         color = (detalle.color or "").strip()
@@ -51,11 +49,6 @@ def descontar_inventario_si_aplica(venta: Venta):
 
         variante.stock = int(variante.stock or 0) - int(detalle.cantidad or 0)
         variante.save(update_fields=["stock"])
-        productos_afectados.add(detalle.producto_id)
-
-    for producto_id in productos_afectados:
-        producto = Producto.objects.get(pk=producto_id)
-        producto.actualizar_disponibilidad_por_stock()
 
     venta.inventario_descontado = True
     venta.save(update_fields=["inventario_descontado"])
@@ -65,8 +58,6 @@ def descontar_inventario_si_aplica(venta: Venta):
 def regresar_inventario_si_aplica(venta: Venta):
     if not venta.inventario_descontado:
         return
-
-    productos_afectados = set()
 
     for detalle in venta.detalles.select_related("producto").all():
         color = (detalle.color or "").strip()
@@ -83,11 +74,6 @@ def regresar_inventario_si_aplica(venta: Venta):
 
         variante.stock = int(variante.stock or 0) + int(detalle.cantidad or 0)
         variante.save(update_fields=["stock"])
-        productos_afectados.add(detalle.producto_id)
-
-    for producto_id in productos_afectados:
-        producto = Producto.objects.get(pk=producto_id)
-        producto.actualizar_disponibilidad_por_stock()
 
     venta.inventario_descontado = False
     venta.save(update_fields=["inventario_descontado"])
@@ -170,12 +156,15 @@ def crear_preferencia_mercado_pago(venta: Venta):
         "X-Idempotency-Key": generar_idempotency_key(),
     }
 
-    response = requests.post(
-        "https://api.mercadopago.com/checkout/preferences",
-        headers=headers,
-        json=payload,
-        timeout=30,
-    )
+    try:
+        response = requests.post(
+            "https://api.mercadopago.com/checkout/preferences",
+            headers=headers,
+            json=payload,
+            timeout=30,
+        )
+    except requests.RequestException as e:
+        raise MercadoPagoError(f"No se pudo conectar con Mercado Pago: {str(e)}")
 
     if response.status_code not in (200, 201):
         raise MercadoPagoError(f"Mercado Pago respondió con error: {response.text}")
@@ -198,11 +187,14 @@ def obtener_pago_mercado_pago(payment_id: str):
         "Authorization": f"Bearer {access_token}",
     }
 
-    response = requests.get(
-        f"https://api.mercadopago.com/v1/payments/{payment_id}",
-        headers=headers,
-        timeout=30,
-    )
+    try:
+        response = requests.get(
+            f"https://api.mercadopago.com/v1/payments/{payment_id}",
+            headers=headers,
+            timeout=30,
+        )
+    except requests.RequestException as e:
+        raise MercadoPagoError(f"No se pudo consultar el pago en Mercado Pago: {str(e)}")
 
     if response.status_code != 200:
         raise MercadoPagoError(f"No se pudo consultar el pago: {response.text}")
@@ -266,13 +258,36 @@ def procesar_webhook_pago(payment_id: str):
 
     if status == "approved":
         venta.estado = "PAGADA"
-        venta.save(update_fields=["mp_payment_id", "mp_status", "mp_status_detail", "mp_raw", "estado"])
+        venta.save(
+            update_fields=[
+                "mp_payment_id",
+                "mp_status",
+                "mp_status_detail",
+                "mp_raw",
+                "estado",
+            ]
+        )
         descontar_inventario_si_aplica(venta)
     elif status in ("rejected", "cancelled", "refunded", "charged_back"):
         venta.estado = "REEMBOLSADA" if status == "refunded" else "CANCELADA"
-        venta.save(update_fields=["mp_payment_id", "mp_status", "mp_status_detail", "mp_raw", "estado"])
+        venta.save(
+            update_fields=[
+                "mp_payment_id",
+                "mp_status",
+                "mp_status_detail",
+                "mp_raw",
+                "estado",
+            ]
+        )
         regresar_inventario_si_aplica(venta)
     else:
-        venta.save(update_fields=["mp_payment_id", "mp_status", "mp_status_detail", "mp_raw"])
+        venta.save(
+            update_fields=[
+                "mp_payment_id",
+                "mp_status",
+                "mp_status_detail",
+                "mp_raw",
+            ]
+        )
 
     return venta

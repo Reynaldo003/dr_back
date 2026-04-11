@@ -1,3 +1,6 @@
+from django.db import transaction
+from django.db.models import IntegerField, Sum, Value
+from django.db.models.functions import Coalesce
 from rest_framework import serializers
 
 from .models import ImagenProducto, Producto, VarianteProducto
@@ -13,6 +16,48 @@ class VarianteProductoSerializer(serializers.ModelSerializer):
     class Meta:
         model = VarianteProducto
         fields = ["id", "color", "talla", "stock"]
+
+
+class ProductoListaSerializer(serializers.ModelSerializer):
+    stock_total = serializers.IntegerField(read_only=True)
+    stock_disponible = serializers.IntegerField(read_only=True)
+    en_rebaja = serializers.BooleanField(read_only=True)
+    precio_final = serializers.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        read_only=True,
+    )
+    porcentaje_descuento = serializers.IntegerField(read_only=True)
+    total_colores = serializers.IntegerField(read_only=True)
+    total_tallas = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = Producto
+        fields = [
+            "id",
+            "codigo",
+            "titulo",
+            "sku",
+            "descripcion",
+            "precio",
+            "costo",
+            "precio_rebaja",
+            "precio_final",
+            "porcentaje_descuento",
+            "en_rebaja",
+            "categoria",
+            "estado",
+            "imagen_principal",
+            "stock_total",
+            "stock_disponible",
+            "stock_vendido",
+            "es_new_arrival",
+            "permite_compra",
+            "fecha_creacion",
+            "fecha_actualizacion",
+            "total_colores",
+            "total_tallas",
+        ]
 
 
 class ProductoSerializer(serializers.ModelSerializer):
@@ -69,7 +114,7 @@ class ProductoSerializer(serializers.ModelSerializer):
         ]
 
     def validate_sku(self, value):
-        sku = value.strip()
+        sku = str(value or "").strip()
         qs = Producto.objects.filter(sku__iexact=sku)
 
         if self.instance:
@@ -85,22 +130,59 @@ class ProductoSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("El costo no puede ser negativo.")
         return value
 
-    def validate_variantes(self, value):
-        combinaciones = set()
+    def validate_imagenes(self, value):
+        imagenes_limpias = []
 
         for item in value:
-            color = item.get("color", "").strip().lower()
-            talla = item.get("talla", "").strip().lower()
-            llave = (color, talla)
+            imagen = str(item.get("imagen") or "").strip()
+            orden = int(item.get("orden") or 0)
 
+            if not imagen:
+                continue
+
+            imagenes_limpias.append(
+                {
+                    "imagen": imagen,
+                    "orden": max(0, orden),
+                }
+            )
+
+        return imagenes_limpias
+
+    def validate_variantes(self, value):
+        combinaciones = set()
+        variantes_limpias = []
+
+        for item in value:
+            color = str(item.get("color") or "").strip()
+            talla = str(item.get("talla") or "").strip()
+            stock = int(item.get("stock") or 0)
+
+            if not color:
+                raise serializers.ValidationError("Cada variante debe tener color.")
+
+            if not talla:
+                raise serializers.ValidationError("Cada variante debe tener talla.")
+
+            if stock < 0:
+                raise serializers.ValidationError("El stock de una variante no puede ser negativo.")
+
+            llave = (color.lower(), talla.lower())
             if llave in combinaciones:
                 raise serializers.ValidationError(
                     "No puedes repetir la misma combinación de color y talla."
                 )
 
             combinaciones.add(llave)
+            variantes_limpias.append(
+                {
+                    "color": color,
+                    "talla": talla,
+                    "stock": stock,
+                }
+            )
 
-        return value
+        return variantes_limpias
 
     def validate(self, attrs):
         precio = attrs.get("precio", getattr(self.instance, "precio", None))
@@ -124,21 +206,65 @@ class ProductoSerializer(serializers.ModelSerializer):
 
         return attrs
 
+    def _crear_imagenes(self, producto, imagenes_data):
+        if not imagenes_data:
+            return
+
+        ImagenProducto.objects.bulk_create(
+            [
+                ImagenProducto(
+                    producto=producto,
+                    imagen=item["imagen"],
+                    orden=int(item.get("orden") or 0),
+                )
+                for item in imagenes_data
+            ]
+        )
+
+    def _crear_variantes(self, producto, variantes_data):
+        if not variantes_data:
+            return
+
+        VarianteProducto.objects.bulk_create(
+            [
+                VarianteProducto(
+                    producto=producto,
+                    color=item["color"],
+                    talla=item["talla"],
+                    stock=int(item.get("stock") or 0),
+                )
+                for item in variantes_data
+            ]
+        )
+
+    def _recargar_producto(self, producto_id):
+        return (
+            Producto.objects
+            .annotate(
+                _stock_total=Coalesce(
+                    Sum("variantes__stock"),
+                    Value(0),
+                    output_field=IntegerField(),
+                )
+            )
+            .prefetch_related("imagenes", "variantes")
+            .get(pk=producto_id)
+        )
+
+    @transaction.atomic
     def create(self, validated_data):
         imagenes_data = validated_data.pop("imagenes", [])
         variantes_data = validated_data.pop("variantes", [])
 
         producto = Producto.objects.create(**validated_data)
 
-        for imagen_data in imagenes_data:
-            ImagenProducto.objects.create(producto=producto, **imagen_data)
-
-        for variante_data in variantes_data:
-            VarianteProducto.objects.create(producto=producto, **variante_data)
+        self._crear_imagenes(producto, imagenes_data)
+        self._crear_variantes(producto, variantes_data)
 
         producto.sincronizar_disponibilidad()
-        return producto
+        return self._recargar_producto(producto.id)
 
+    @transaction.atomic
     def update(self, instance, validated_data):
         imagenes_data = validated_data.pop("imagenes", None)
         variantes_data = validated_data.pop("variantes", None)
@@ -150,16 +276,14 @@ class ProductoSerializer(serializers.ModelSerializer):
 
         if imagenes_data is not None:
             instance.imagenes.all().delete()
-            for imagen_data in imagenes_data:
-                ImagenProducto.objects.create(producto=instance, **imagen_data)
+            self._crear_imagenes(instance, imagenes_data)
 
         if variantes_data is not None:
             instance.variantes.all().delete()
-            for variante_data in variantes_data:
-                VarianteProducto.objects.create(producto=instance, **variante_data)
+            self._crear_variantes(instance, variantes_data)
 
         instance.sincronizar_disponibilidad()
-        return instance
+        return self._recargar_producto(instance.id)
 
 
 class ProductoPublicoSerializer(serializers.ModelSerializer):
