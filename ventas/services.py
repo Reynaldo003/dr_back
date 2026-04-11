@@ -1,4 +1,3 @@
-#ventas/services.py
 import hashlib
 import hmac
 import uuid
@@ -6,7 +5,8 @@ import uuid
 import requests
 from django.conf import settings
 from django.db import transaction
-from django.db.models import F
+
+from productos.models import Producto, VarianteProducto
 
 from .models import Venta
 
@@ -27,16 +27,35 @@ def descontar_inventario_si_aplica(venta: Venta):
     if venta.estado != "PAGADA":
         return
 
-    for detalle in venta.detalles.select_related("producto").all():
-        producto = detalle.producto.__class__.objects.select_for_update().get(pk=detalle.producto_id)
+    productos_afectados = set()
 
-        if detalle.cantidad > producto.stock_disponible:
+    for detalle in venta.detalles.select_related("producto").all():
+        color = (detalle.color or "").strip()
+        talla = (detalle.talla or "").strip()
+
+        variante = VarianteProducto.objects.select_for_update().filter(
+            producto_id=detalle.producto_id,
+            color__iexact=color,
+            talla__iexact=talla,
+        ).first()
+
+        if not variante:
             raise MercadoPagoError(
-                f"Stock insuficiente para {producto.titulo}. Disponible: {producto.stock_disponible}."
+                f"No existe la variante {color} / {talla} para {detalle.producto.titulo}."
             )
 
-        producto.stock_vendido = F("stock_vendido") + detalle.cantidad
-        producto.save(update_fields=["stock_vendido"])
+        if detalle.cantidad > variante.stock:
+            raise MercadoPagoError(
+                f"Stock insuficiente para {detalle.producto.titulo} ({color} / {talla}). Disponible: {variante.stock}."
+            )
+
+        variante.stock = int(variante.stock or 0) - int(detalle.cantidad or 0)
+        variante.save(update_fields=["stock"])
+        productos_afectados.add(detalle.producto_id)
+
+    for producto_id in productos_afectados:
+        producto = Producto.objects.get(pk=producto_id)
+        producto.actualizar_disponibilidad_por_stock()
 
     venta.inventario_descontado = True
     venta.save(update_fields=["inventario_descontado"])
@@ -47,11 +66,28 @@ def regresar_inventario_si_aplica(venta: Venta):
     if not venta.inventario_descontado:
         return
 
+    productos_afectados = set()
+
     for detalle in venta.detalles.select_related("producto").all():
-        producto = detalle.producto.__class__.objects.select_for_update().get(pk=detalle.producto_id)
-        nuevo_stock_vendido = max((producto.stock_vendido or 0) - detalle.cantidad, 0)
-        producto.stock_vendido = nuevo_stock_vendido
-        producto.save(update_fields=["stock_vendido"])
+        color = (detalle.color or "").strip()
+        talla = (detalle.talla or "").strip()
+
+        variante = VarianteProducto.objects.select_for_update().filter(
+            producto_id=detalle.producto_id,
+            color__iexact=color,
+            talla__iexact=talla,
+        ).first()
+
+        if not variante:
+            continue
+
+        variante.stock = int(variante.stock or 0) + int(detalle.cantidad or 0)
+        variante.save(update_fields=["stock"])
+        productos_afectados.add(detalle.producto_id)
+
+    for producto_id in productos_afectados:
+        producto = Producto.objects.get(pk=producto_id)
+        producto.actualizar_disponibilidad_por_stock()
 
     venta.inventario_descontado = False
     venta.save(update_fields=["inventario_descontado"])
@@ -89,6 +125,16 @@ def crear_preferencia_mercado_pago(venta: Venta):
                 "title": titulo,
                 "quantity": detalle.cantidad,
                 "unit_price": float(detalle.precio_unitario),
+                "currency_id": "MXN",
+            }
+        )
+
+    if float(venta.costo_envio or 0) > 0:
+        items.append(
+            {
+                "title": f"Envío - {venta.get_tipo_envio_display()}",
+                "quantity": 1,
+                "unit_price": float(venta.costo_envio),
                 "currency_id": "MXN",
             }
         )

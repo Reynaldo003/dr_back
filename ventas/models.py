@@ -1,4 +1,3 @@
-#ventas/models.py
 import uuid
 from datetime import date
 from decimal import Decimal
@@ -29,6 +28,12 @@ class Venta(models.Model):
         ("TARJETA", "Tarjeta"),
     )
 
+    TIPOS_ENVIO = (
+        ("ESTANDAR", "Envío estándar nacional"),
+        ("EXPRESS", "Envío nacional express"),
+        ("SIGUIENTE", "Envío día siguiente nacional"),
+    )
+
     folio = models.CharField(max_length=30, unique=True, blank=True)
 
     cliente_usuario = models.ForeignKey(
@@ -56,6 +61,17 @@ class Venta(models.Model):
     estado_direccion = models.CharField(max_length=120, blank=True, default="")
     codigo_postal = models.CharField(max_length=20, blank=True, default="")
     referencias_envio = models.TextField(blank=True, default="")
+
+    tipo_envio = models.CharField(
+        max_length=20,
+        choices=TIPOS_ENVIO,
+        default="ESTANDAR",
+    )
+    costo_envio = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
 
     fecha_venta = models.DateField(default=date.today)
     estado = models.CharField(max_length=20, choices=ESTADOS, default="PENDIENTE")

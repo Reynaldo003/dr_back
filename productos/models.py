@@ -1,4 +1,5 @@
-# productos/models.py
+from decimal import Decimal
+
 from django.db import models
 from django.db.models import Sum
 
@@ -14,6 +15,11 @@ class Producto(models.Model):
     sku = models.CharField(max_length=80, unique=True)
     descripcion = models.TextField(blank=True, default="")
     precio = models.DecimalField(max_digits=10, decimal_places=2)
+    costo = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
     precio_rebaja = models.DecimalField(
         max_digits=10,
         decimal_places=2,
@@ -25,7 +31,6 @@ class Producto(models.Model):
     imagen_principal = models.TextField(blank=True, default="")
     stock_vendido = models.PositiveIntegerField(default=0)
 
-    # Nuevos campos
     es_new_arrival = models.BooleanField(default=False)
     permite_compra = models.BooleanField(default=True)
 
@@ -42,11 +47,11 @@ class Producto(models.Model):
     @property
     def stock_total(self):
         total = self.variantes.aggregate(total=Sum("stock")).get("total")
-        return total or 0
+        return int(total or 0)
 
     @property
     def stock_disponible(self):
-        return max((self.stock_total or 0) - (self.stock_vendido or 0), 0)
+        return self.stock_total
 
     @property
     def en_rebaja(self):
@@ -67,6 +72,28 @@ class Producto(models.Model):
 
         descuento = ((self.precio - self.precio_rebaja) / self.precio) * 100
         return round(descuento)
+
+    def sincronizar_disponibilidad(self, forzar_activo=False):
+        if not self.pk:
+            return
+
+        total = self.stock_total
+        cambios = {}
+
+        if total <= 0:
+            cambios["estado"] = "Inactivo"
+            cambios["permite_compra"] = False
+        else:
+            if not self.es_new_arrival:
+                cambios["permite_compra"] = True
+
+            if forzar_activo:
+                cambios["estado"] = "Activo"
+
+        if cambios:
+            Producto.objects.filter(pk=self.pk).update(**cambios)
+            for campo, valor in cambios.items():
+                setattr(self, campo, valor)
 
     def save(self, *args, **kwargs):
         es_nuevo = self.pk is None
@@ -125,3 +152,12 @@ class VarianteProducto(models.Model):
 
     def __str__(self):
         return f"{self.producto.titulo} - {self.color} / {self.talla}"
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        self.producto.sincronizar_disponibilidad(forzar_activo=self.stock > 0)
+
+    def delete(self, *args, **kwargs):
+        producto = self.producto
+        super().delete(*args, **kwargs)
+        producto.sincronizar_disponibilidad()

@@ -1,13 +1,32 @@
-#ventas/serializers.py
 from decimal import Decimal
 
 from rest_framework import serializers
 
 from clientes.models import Cliente, ClienteDireccion
-from productos.models import Producto
+from productos.models import Producto, VarianteProducto
 from productos.serializers import ProductoSerializer
 
 from .models import Venta, VentaDetalle
+
+ENVIO_GRATIS_DESDE = Decimal("1500.00")
+ENVIO_TARIFAS = {
+    "ESTANDAR": Decimal("150.00"),
+    "EXPRESS": Decimal("250.00"),
+    "SIGUIENTE": Decimal("399.00"),
+}
+
+
+def normalizar_tipo_envio(value):
+    tipo = str(value or "ESTANDAR").strip().upper()
+    if tipo not in ENVIO_TARIFAS:
+        raise serializers.ValidationError("Tipo de envío inválido.")
+    return tipo
+
+
+def calcular_costo_envio(tipo_envio, subtotal):
+    if Decimal(subtotal) >= ENVIO_GRATIS_DESDE:
+        return Decimal("0.00")
+    return ENVIO_TARIFAS[tipo_envio]
 
 
 class VentaDetalleSerializer(serializers.ModelSerializer):
@@ -53,6 +72,8 @@ class VentaSerializer(serializers.ModelSerializer):
             "estado_direccion",
             "codigo_postal",
             "referencias_envio",
+            "tipo_envio",
+            "costo_envio",
             "fecha_venta",
             "estado",
             "estado_envio",
@@ -118,13 +139,18 @@ class VentaSerializer(serializers.ModelSerializer):
 
     def _obtener_stock_extra_por_edicion(self):
         stock_extra = {}
-
         instance = getattr(self, "instance", None)
+
         if not instance:
             return stock_extra
 
         for detalle in instance.detalles.all():
-            stock_extra[detalle.producto_id] = stock_extra.get(detalle.producto_id, 0) + detalle.cantidad
+            llave = (
+                detalle.producto_id,
+                (detalle.color or "").strip().lower(),
+                (detalle.talla or "").strip().lower(),
+            )
+            stock_extra[llave] = stock_extra.get(llave, 0) + detalle.cantidad
 
         return stock_extra
 
@@ -133,33 +159,58 @@ class VentaSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("La venta debe tener al menos un producto.")
 
         acumulado = {}
+        producto_ids = set()
+
         for item in value:
             producto_id = item["producto_id"]
+            color = str(item.get("color") or "").strip()
+            talla = str(item.get("talla") or "").strip()
             cantidad = int(item.get("cantidad") or 0)
 
             if cantidad <= 0:
                 raise serializers.ValidationError("Todas las cantidades deben ser mayores a cero.")
 
-            acumulado[producto_id] = acumulado.get(producto_id, 0) + cantidad
+            if not color or not talla:
+                raise serializers.ValidationError("Cada detalle debe incluir color y talla.")
+
+            llave = (producto_id, color.lower(), talla.lower())
+            acumulado[llave] = acumulado.get(llave, 0) + cantidad
+            producto_ids.add(producto_id)
 
         productos = {
             p.id: p
-            for p in Producto.objects.filter(id__in=acumulado.keys())
+            for p in Producto.objects.filter(id__in=producto_ids)
+        }
+
+        variantes = {
+            (
+                v.producto_id,
+                v.color.strip().lower(),
+                v.talla.strip().lower(),
+            ): v
+            for v in VarianteProducto.objects.filter(producto_id__in=producto_ids)
         }
 
         stock_extra = self._obtener_stock_extra_por_edicion()
 
-        for producto_id, cantidad in acumulado.items():
+        for llave, cantidad in acumulado.items():
+            producto_id, color, talla = llave
             producto = productos.get(producto_id)
 
             if not producto:
                 raise serializers.ValidationError(f"El producto {producto_id} no existe.")
 
-            disponible = producto.stock_disponible + stock_extra.get(producto_id, 0)
+            variante = variantes.get(llave)
+            if not variante:
+                raise serializers.ValidationError(
+                    f"No existe la variante {producto.titulo} / {color} / {talla}."
+                )
+
+            disponible = int(variante.stock or 0) + stock_extra.get(llave, 0)
 
             if cantidad > disponible:
                 raise serializers.ValidationError(
-                    f"Stock insuficiente para {producto.titulo}. Disponible: {disponible}."
+                    f"Stock insuficiente para {producto.titulo} / {variante.color} / {variante.talla}. Disponible: {disponible}."
                 )
 
         return value
@@ -170,7 +221,7 @@ class VentaSerializer(serializers.ModelSerializer):
         for item in detalles_data:
             producto = Producto.objects.get(pk=item["producto_id"])
             cantidad = int(item["cantidad"])
-            precio_unitario = Decimal(producto.precio)
+            precio_unitario = Decimal(str(producto.precio_final))
             subtotal_linea = precio_unitario * cantidad
 
             VentaDetalle.objects.create(
@@ -186,7 +237,7 @@ class VentaSerializer(serializers.ModelSerializer):
             subtotal += subtotal_linea
 
         venta.subtotal = subtotal
-        venta.total = subtotal
+        venta.total = subtotal + Decimal(str(venta.costo_envio or 0))
         venta.save(update_fields=["subtotal", "total"])
 
         return venta
@@ -207,6 +258,11 @@ class VentaSerializer(serializers.ModelSerializer):
         if detalles_data is not None:
             instance.detalles.all().delete()
             self._crear_detalles_y_totales(instance, detalles_data)
+        else:
+            instance.total = Decimal(str(instance.subtotal or 0)) + Decimal(
+                str(instance.costo_envio or 0)
+            )
+            instance.save(update_fields=["total"])
 
         return instance
 
@@ -220,6 +276,7 @@ class CheckoutDetalleSerializer(serializers.Serializer):
 
 class CheckoutMercadoPagoSerializer(serializers.Serializer):
     direccion_id = serializers.IntegerField(required=False)
+    tipo_envio = serializers.CharField(required=False, default="ESTANDAR")
 
     cliente = serializers.CharField(max_length=180, required=False, allow_blank=True)
     cliente_email = serializers.EmailField(required=False, allow_blank=True)
@@ -248,25 +305,54 @@ class CheckoutMercadoPagoSerializer(serializers.Serializer):
             raise serializers.ValidationError("Debes enviar al menos un producto.")
 
         acumulado = {}
+        producto_ids = set()
+
         for item in value:
             producto_id = item["producto_id"]
+            color = str(item.get("color") or "").strip()
+            talla = str(item.get("talla") or "").strip()
             cantidad = int(item["cantidad"])
-            acumulado[producto_id] = acumulado.get(producto_id, 0) + cantidad
 
-        productos = {p.id: p for p in Producto.objects.filter(id__in=acumulado.keys())}
+            if not color or not talla:
+                raise serializers.ValidationError("Cada producto debe incluir color y talla.")
 
-        for producto_id, cantidad in acumulado.items():
+            llave = (producto_id, color.lower(), talla.lower())
+            acumulado[llave] = acumulado.get(llave, 0) + cantidad
+            producto_ids.add(producto_id)
+
+        productos = {
+            p.id: p
+            for p in Producto.objects.filter(id__in=producto_ids)
+        }
+
+        variantes = {
+            (
+                v.producto_id,
+                v.color.strip().lower(),
+                v.talla.strip().lower(),
+            ): v
+            for v in VarianteProducto.objects.filter(producto_id__in=producto_ids)
+        }
+
+        for llave, cantidad in acumulado.items():
+            producto_id, _, _ = llave
             producto = productos.get(producto_id)
 
             if not producto:
                 raise serializers.ValidationError(f"El producto {producto_id} no existe.")
 
-            if producto.estado != "Activo":
+            if producto.estado != "Activo" or not producto.permite_compra:
                 raise serializers.ValidationError(f"{producto.titulo} no está disponible.")
 
-            if cantidad > producto.stock_disponible:
+            variante = variantes.get(llave)
+            if not variante:
                 raise serializers.ValidationError(
-                    f"Stock insuficiente para {producto.titulo}. Disponible: {producto.stock_disponible}."
+                    f"No existe la variante solicitada para {producto.titulo}."
+                )
+
+            if cantidad > int(variante.stock or 0):
+                raise serializers.ValidationError(
+                    f"Stock insuficiente para {producto.titulo} / {variante.color} / {variante.talla}. Disponible: {variante.stock}."
                 )
 
         return value
@@ -275,6 +361,8 @@ class CheckoutMercadoPagoSerializer(serializers.Serializer):
         cliente = self._obtener_cliente_autenticado()
         direccion_id = attrs.get("direccion_id")
         direccion = None
+
+        attrs["tipo_envio"] = normalizar_tipo_envio(attrs.get("tipo_envio", "ESTANDAR"))
 
         if cliente:
             attrs["cliente"] = (attrs.get("cliente") or cliente.nombre or "").strip()
@@ -338,6 +426,22 @@ class CheckoutMercadoPagoSerializer(serializers.Serializer):
 
         cliente = validated_data.pop("_cliente_obj", None)
         direccion = validated_data.pop("_direccion_obj", None)
+        tipo_envio = validated_data.pop("tipo_envio", "ESTANDAR")
+
+        producto_ids = [item["producto_id"] for item in detalles_data]
+        productos = {
+            p.id: p
+            for p in Producto.objects.filter(id__in=producto_ids)
+        }
+
+        subtotal = Decimal("0.00")
+        for item in detalles_data:
+            producto = productos[item["producto_id"]]
+            cantidad = int(item["cantidad"])
+            precio_unitario = Decimal(str(producto.precio_final))
+            subtotal += precio_unitario * cantidad
+
+        costo_envio = calcular_costo_envio(tipo_envio, subtotal)
 
         venta = Venta.objects.create(
             cliente_usuario=cliente,
@@ -345,15 +449,15 @@ class CheckoutMercadoPagoSerializer(serializers.Serializer):
             metodo_pago="MERCADO_PAGO",
             estado="PENDIENTE",
             estado_envio="PENDIENTE",
+            tipo_envio=tipo_envio,
+            costo_envio=costo_envio,
             **validated_data,
         )
 
-        subtotal = Decimal("0.00")
-
         for item in detalles_data:
-            producto = Producto.objects.get(pk=item["producto_id"])
+            producto = productos[item["producto_id"]]
             cantidad = int(item["cantidad"])
-            precio_unitario = Decimal(producto.precio)
+            precio_unitario = Decimal(str(producto.precio_final))
             subtotal_linea = precio_unitario * cantidad
 
             VentaDetalle.objects.create(
@@ -366,10 +470,8 @@ class CheckoutMercadoPagoSerializer(serializers.Serializer):
                 subtotal=subtotal_linea,
             )
 
-            subtotal += subtotal_linea
-
         venta.subtotal = subtotal
-        venta.total = subtotal
+        venta.total = subtotal + costo_envio
         venta.save(update_fields=["subtotal", "total"])
 
         return venta

@@ -1,4 +1,3 @@
-# productos/serializers.py
 from rest_framework import serializers
 
 from .models import ImagenProducto, Producto, VarianteProducto
@@ -38,6 +37,7 @@ class ProductoSerializer(serializers.ModelSerializer):
             "sku",
             "descripcion",
             "precio",
+            "costo",
             "precio_rebaja",
             "precio_final",
             "porcentaje_descuento",
@@ -79,6 +79,11 @@ class ProductoSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Ya existe un producto con este SKU.")
 
         return sku
+
+    def validate_costo(self, value):
+        if value < 0:
+            raise serializers.ValidationError("El costo no puede ser negativo.")
+        return value
 
     def validate_variantes(self, value):
         combinaciones = set()
@@ -131,6 +136,7 @@ class ProductoSerializer(serializers.ModelSerializer):
         for variante_data in variantes_data:
             VarianteProducto.objects.create(producto=producto, **variante_data)
 
+        producto.sincronizar_disponibilidad()
         return producto
 
     def update(self, instance, validated_data):
@@ -152,6 +158,7 @@ class ProductoSerializer(serializers.ModelSerializer):
             for variante_data in variantes_data:
                 VarianteProducto.objects.create(producto=instance, **variante_data)
 
+        instance.sincronizar_disponibilidad()
         return instance
 
 
@@ -161,8 +168,6 @@ class ProductoPublicoSerializer(serializers.ModelSerializer):
     stock_total = serializers.IntegerField(read_only=True)
     stock_disponible = serializers.IntegerField(read_only=True)
 
-    # Para no romper tu front existente:
-    # "precio" será el precio final visible al cliente
     precio = serializers.DecimalField(
         source="precio_final",
         max_digits=10,
