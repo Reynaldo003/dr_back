@@ -154,7 +154,7 @@ MEDIA_URL = "/media/"
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
-MP_ACCESS_TOKEN="TEST-2278630088070175-031911-6c90d99d17bfeeb539fbc1fc024d9bd4-413781991"
+MP_ACCESS_TOKEN="APP_USR-607568275018461-041022-37c80f90c3edfe81c4c8870fbe3223b7-2674216966"
 MP_BACK_URL_SUCCESS="https://misdosreynas.com/checkout/success"
 MP_BACK_URL_PENDING="https://misdosreynas.com/checkout/pending"
 MP_BACK_URL_FAILURE="https://misdosreynas.com/checkout/failure"
