@@ -90,7 +90,7 @@ class ProductoViewSet(PaginationMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.AllowAny]
     default_page_size = 40
     max_page_size = 100
-    paginate_without_params = False
+    paginate_without_params = True
 
     def get_serializer_class(self):
         if self.action == "list":
