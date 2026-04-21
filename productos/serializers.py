@@ -1,3 +1,4 @@
+#productos/serializers.py
 from django.db import transaction
 from django.db.models import IntegerField, Sum, Value
 from django.db.models.functions import Coalesce

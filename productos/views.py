@@ -1,18 +1,14 @@
+# productos/views.py
 import math
 
 from django.db.models import (
-    Case,
     Count,
-    Exists,
     F,
     IntegerField,
-    OuterRef,
     Prefetch,
     Q,
-    Subquery,
     Sum,
     Value,
-    When,
 )
 from django.db.models.deletion import ProtectedError
 from django.db.models.functions import Coalesce
@@ -224,95 +220,37 @@ class ProductoPublicoViewSet(PaginationMixin, viewsets.ReadOnlyModelViewSet):
     max_page_size = 48
     paginate_without_params = True
 
+    PUBLIC_ONLY_FIELDS = (
+        "id",
+        "codigo",
+        "titulo",
+        "sku",
+        "descripcion",
+        "precio",
+        "precio_rebaja",
+        "categoria",
+        "imagen_principal",
+        "es_new_arrival",
+        "permite_compra",
+        "estado",
+    )
+
     def get_serializer_class(self):
         if self.action == "retrieve":
             return ProductoPublicoDetalleSerializer
         return ProductoPublicoListaSerializer
 
-    def _stock_total_subquery(self):
-        return (
-            VarianteProducto.objects
-            .filter(producto_id=OuterRef("pk"))
-            .values("producto_id")
-            .annotate(total=Sum("stock"))
-            .values("total")[:1]
-        )
-
-    def _base_queryset(self):
-        tiene_stock_qs = VarianteProducto.objects.filter(
-            producto_id=OuterRef("pk"),
-            stock__gt=0,
-        )
-
-        return (
-            Producto.objects
-            .filter(estado="Activo")
-            .annotate(tiene_stock=Exists(tiene_stock_qs))
-        )
-
-    def _with_stock_total(self, queryset):
+    def _annotate_stock_total(self, queryset):
         return queryset.annotate(
             _stock_total=Coalesce(
-                Subquery(self._stock_total_subquery(), output_field=IntegerField()),
+                Sum("variantes__stock"),
                 Value(0),
+                output_field=IntegerField(),
             )
         )
 
-    def get_queryset(self):
-        queryset = self._base_queryset()
-
-        if self.action == "retrieve":
-            queryset = self._with_stock_total(queryset).prefetch_related(
-                Prefetch(
-                    "imagenes",
-                    queryset=ImagenProducto.objects.only(
-                        "id",
-                        "producto_id",
-                        "imagen",
-                        "orden",
-                    ),
-                ),
-                Prefetch(
-                    "variantes",
-                    queryset=VarianteProducto.objects.only(
-                        "id",
-                        "producto_id",
-                        "color",
-                        "talla",
-                        "stock",
-                    ),
-                ),
-            ).only(
-                "id",
-                "codigo",
-                "titulo",
-                "sku",
-                "descripcion",
-                "precio",
-                "precio_rebaja",
-                "categoria",
-                "imagen_principal",
-                "es_new_arrival",
-                "permite_compra",
-                "estado",
-            )
-        else:
-            queryset = queryset.only(
-                "id",
-                "codigo",
-                "titulo",
-                "sku",
-                "descripcion",
-                "precio",
-                "precio_rebaja",
-                "categoria",
-                "imagen_principal",
-                "es_new_arrival",
-                "permite_compra",
-                "estado",
-            )
-
-        return queryset.order_by("-id")
+    def _base_public_queryset(self):
+        return Producto.objects.filter(estado="Activo").only(*self.PUBLIC_ONLY_FIELDS)
 
     def _aplicar_filtros(self, queryset):
         buscar = self.request.query_params.get("buscar", "").strip()
@@ -332,6 +270,35 @@ class ProductoPublicoViewSet(PaginationMixin, viewsets.ReadOnlyModelViewSet):
 
         return queryset
 
+    def get_queryset(self):
+        queryset = self._base_public_queryset()
+        queryset = self._annotate_stock_total(queryset)
+
+        if self.action == "retrieve":
+            queryset = queryset.prefetch_related(
+                Prefetch(
+                    "imagenes",
+                    queryset=ImagenProducto.objects.only(
+                        "id",
+                        "producto_id",
+                        "imagen",
+                        "orden",
+                    ),
+                ),
+                Prefetch(
+                    "variantes",
+                    queryset=VarianteProducto.objects.only(
+                        "id",
+                        "producto_id",
+                        "color",
+                        "talla",
+                        "stock",
+                    ),
+                ),
+            )
+
+        return queryset.order_by("-id")
+
     def _build_paginated_public_response(self, queryset):
         page = self._parse_positive_int(
             self.request.query_params.get("page"),
@@ -348,48 +315,7 @@ class ProductoPublicoViewSet(PaginationMixin, viewsets.ReadOnlyModelViewSet):
         end = start + page_size
         pages = math.ceil(total / page_size) if total > 0 else 1
 
-        ids = list(queryset.values_list("id", flat=True)[start:end])
-
-        if not ids:
-            return Response(
-                {
-                    "count": total,
-                    "page": page,
-                    "page_size": page_size,
-                    "pages": pages,
-                    "has_previous": page > 1,
-                    "has_next": end < total,
-                    "results": [],
-                }
-            )
-
-        preserved_order = Case(
-            *[When(id=pk, then=pos) for pos, pk in enumerate(ids)],
-            output_field=IntegerField(),
-        )
-
-        page_queryset = (
-            self._with_stock_total(
-                Producto.objects.filter(id__in=ids)
-            )
-            .only(
-                "id",
-                "codigo",
-                "titulo",
-                "sku",
-                "descripcion",
-                "precio",
-                "precio_rebaja",
-                "categoria",
-                "imagen_principal",
-                "es_new_arrival",
-                "permite_compra",
-                "estado",
-            )
-            .order_by(preserved_order)
-        )
-
-        serializer = self.get_serializer(page_queryset, many=True)
+        serializer = self.get_serializer(queryset[start:end], many=True)
 
         return Response(
             {
@@ -414,7 +340,7 @@ class ProductoPublicoViewSet(PaginationMixin, viewsets.ReadOnlyModelViewSet):
         ).strip().lower()
 
         if solo_disponibles == "true":
-            queryset = queryset.filter(tiene_stock=True, permite_compra=True)
+            queryset = queryset.filter(_stock_total__gt=0, permite_compra=True)
 
         return self._build_paginated_public_response(queryset)
 
@@ -445,7 +371,7 @@ class ProductoPublicoViewSet(PaginationMixin, viewsets.ReadOnlyModelViewSet):
         ).strip().lower()
 
         if solo_disponibles == "true":
-            queryset = queryset.filter(tiene_stock=True, permite_compra=True)
+            queryset = queryset.filter(_stock_total__gt=0, permite_compra=True)
 
         return self._build_paginated_public_response(queryset)
 
