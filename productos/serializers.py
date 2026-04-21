@@ -21,14 +21,13 @@ class VarianteProductoSerializer(serializers.ModelSerializer):
 
 class ProductoListaSerializer(serializers.ModelSerializer):
     stock_total = serializers.IntegerField(read_only=True)
-    stock_disponible = serializers.IntegerField(read_only=True)
-    en_rebaja = serializers.BooleanField(read_only=True)
-    precio_final = serializers.DecimalField(
+    precio_rebaja = serializers.DecimalField(
         max_digits=10,
         decimal_places=2,
+        required=False,
+        allow_null=True,
         read_only=True,
     )
-    porcentaje_descuento = serializers.IntegerField(read_only=True)
     total_colores = serializers.IntegerField(read_only=True)
     total_tallas = serializers.IntegerField(read_only=True)
 
@@ -39,27 +38,15 @@ class ProductoListaSerializer(serializers.ModelSerializer):
             "codigo",
             "titulo",
             "sku",
-            "descripcion",
             "precio",
-            "costo",
             "precio_rebaja",
-            "precio_final",
-            "porcentaje_descuento",
-            "en_rebaja",
             "categoria",
             "estado",
             "imagen_principal",
             "stock_total",
-            "stock_disponible",
-            "stock_vendido",
-            "es_new_arrival",
-            "permite_compra",
-            "fecha_creacion",
-            "fecha_actualizacion",
             "total_colores",
             "total_tallas",
         ]
-
 
 class ProductoSerializer(serializers.ModelSerializer):
     imagenes = ImagenProductoSerializer(many=True, required=False)

@@ -117,18 +117,11 @@ class ProductoViewSet(PaginationMixin, viewsets.ModelViewSet):
                 "codigo",
                 "titulo",
                 "sku",
-                "descripcion",
                 "precio",
-                "costo",
                 "precio_rebaja",
                 "categoria",
                 "estado",
                 "imagen_principal",
-                "stock_vendido",
-                "es_new_arrival",
-                "permite_compra",
-                "fecha_creacion",
-                "fecha_actualizacion",
             )
         else:
             queryset = queryset.prefetch_related(
