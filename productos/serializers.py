@@ -165,7 +165,9 @@ class ProductoSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("Cada variante debe tener talla.")
 
             if stock < 0:
-                raise serializers.ValidationError("El stock de una variante no puede ser negativo.")
+                raise serializers.ValidationError(
+                    "El stock de una variante no puede ser negativo."
+                )
 
             llave = (color.lower(), talla.lower())
             if llave in combinaciones:
@@ -218,7 +220,8 @@ class ProductoSerializer(serializers.ModelSerializer):
                     orden=int(item.get("orden") or 0),
                 )
                 for item in imagenes_data
-            ]
+            ],
+            batch_size=200,
         )
 
     def _crear_variantes(self, producto, variantes_data):
@@ -234,7 +237,8 @@ class ProductoSerializer(serializers.ModelSerializer):
                     stock=int(item.get("stock") or 0),
                 )
                 for item in variantes_data
-            ]
+            ],
+            batch_size=200,
         )
 
     def _recargar_producto(self, producto_id):
@@ -286,9 +290,7 @@ class ProductoSerializer(serializers.ModelSerializer):
         return self._recargar_producto(instance.id)
 
 
-class ProductoPublicoSerializer(serializers.ModelSerializer):
-    imagenes = ImagenProductoSerializer(many=True, read_only=True)
-    variantes = VarianteProductoSerializer(many=True, read_only=True)
+class ProductoPublicoListaSerializer(serializers.ModelSerializer):
     stock_total = serializers.IntegerField(read_only=True)
     stock_disponible = serializers.IntegerField(read_only=True)
 
@@ -313,19 +315,26 @@ class ProductoPublicoSerializer(serializers.ModelSerializer):
             "id",
             "codigo",
             "titulo",
-            "sku",
             "descripcion",
             "precio",
             "precio_original",
-            "precio_rebaja",
             "en_rebaja",
             "porcentaje_descuento",
             "categoria",
             "imagen_principal",
-            "imagenes",
-            "variantes",
             "stock_total",
             "stock_disponible",
             "es_new_arrival",
             "permite_compra",
+        ]
+
+
+class ProductoPublicoDetalleSerializer(ProductoPublicoListaSerializer):
+    imagenes = ImagenProductoSerializer(many=True, read_only=True)
+    variantes = VarianteProductoSerializer(many=True, read_only=True)
+
+    class Meta(ProductoPublicoListaSerializer.Meta):
+        fields = ProductoPublicoListaSerializer.Meta.fields + [
+            "imagenes",
+            "variantes",
         ]

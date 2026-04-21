@@ -149,8 +149,14 @@ STATIC_URL = '/static/'
 STATIC_ROOT = "/var/www/misdosreynas/dr_back/staticfiles"
 
 MEDIA_URL = "/media/"
-MEDIA_URL = "/media/"
 
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "misdosreynas-cache",
+        "TIMEOUT": 60 * 5,
+    }
+}
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 

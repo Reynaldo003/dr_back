@@ -1,6 +1,5 @@
-#productos/urls.py
+#dr_back/productos/urls.py
 from rest_framework.routers import DefaultRouter
-
 from .views import ProductoPublicoViewSet, ProductoViewSet
 
 router = DefaultRouter()
