@@ -1,7 +1,4 @@
-#productos/serializers.py
 from django.db import transaction
-from django.db.models import IntegerField, Sum, Value
-from django.db.models.functions import Coalesce
 from rest_framework import serializers
 
 from .models import ImagenProducto, Producto, VarianteProducto
@@ -20,7 +17,7 @@ class VarianteProductoSerializer(serializers.ModelSerializer):
 
 
 class ProductoListaSerializer(serializers.ModelSerializer):
-    stock_total = serializers.IntegerField(read_only=True)
+    stock_total = serializers.SerializerMethodField()
     precio_rebaja = serializers.DecimalField(
         max_digits=10,
         decimal_places=2,
@@ -28,8 +25,8 @@ class ProductoListaSerializer(serializers.ModelSerializer):
         allow_null=True,
         read_only=True,
     )
-    total_colores = serializers.IntegerField(read_only=True)
-    total_tallas = serializers.IntegerField(read_only=True)
+    total_colores = serializers.SerializerMethodField()
+    total_tallas = serializers.SerializerMethodField()
 
     class Meta:
         model = Producto
@@ -48,11 +45,51 @@ class ProductoListaSerializer(serializers.ModelSerializer):
             "total_tallas",
         ]
 
+    def _obtener_variantes(self, obj):
+        cache_prefetch = getattr(obj, "_prefetched_objects_cache", {})
+        variantes = cache_prefetch.get("variantes")
+        if variantes is not None:
+            return variantes
+
+        return list(
+            obj.variantes.only(
+                "id",
+                "producto_id",
+                "color",
+                "talla",
+                "stock",
+            )
+        )
+
+    def get_stock_total(self, obj):
+        return int(obj.stock_total or 0)
+
+    def get_total_colores(self, obj):
+        variantes = self._obtener_variantes(obj)
+        return len(
+            {
+                str(variante.color).strip().lower()
+                for variante in variantes
+                if variante.color
+            }
+        )
+
+    def get_total_tallas(self, obj):
+        variantes = self._obtener_variantes(obj)
+        return len(
+            {
+                str(variante.talla).strip().lower()
+                for variante in variantes
+                if variante.talla
+            }
+        )
+
+
 class ProductoSerializer(serializers.ModelSerializer):
     imagenes = ImagenProductoSerializer(many=True, required=False)
     variantes = VarianteProductoSerializer(many=True, required=False)
-    stock_total = serializers.IntegerField(read_only=True)
-    stock_disponible = serializers.IntegerField(read_only=True)
+    stock_total = serializers.SerializerMethodField()
+    stock_disponible = serializers.SerializerMethodField()
     en_rebaja = serializers.BooleanField(read_only=True)
     precio_final = serializers.DecimalField(
         max_digits=10,
@@ -101,8 +138,17 @@ class ProductoSerializer(serializers.ModelSerializer):
             "fecha_actualizacion",
         ]
 
+    def get_stock_total(self, obj):
+        return int(obj.stock_total or 0)
+
+    def get_stock_disponible(self, obj):
+        return int(obj.stock_disponible or 0)
+
     def validate_sku(self, value):
         sku = str(value or "").strip()
+        if not sku:
+            raise serializers.ValidationError("El SKU es obligatorio.")
+
         qs = Producto.objects.filter(sku__iexact=sku)
 
         if self.instance:
@@ -232,13 +278,6 @@ class ProductoSerializer(serializers.ModelSerializer):
     def _recargar_producto(self, producto_id):
         return (
             Producto.objects
-            .annotate(
-                _stock_total=Coalesce(
-                    Sum("variantes__stock"),
-                    Value(0),
-                    output_field=IntegerField(),
-                )
-            )
             .prefetch_related("imagenes", "variantes")
             .get(pk=producto_id)
         )
@@ -279,8 +318,8 @@ class ProductoSerializer(serializers.ModelSerializer):
 
 
 class ProductoPublicoListaSerializer(serializers.ModelSerializer):
-    stock_total = serializers.IntegerField(read_only=True)
-    stock_disponible = serializers.IntegerField(read_only=True)
+    stock_total = serializers.SerializerMethodField()
+    stock_disponible = serializers.SerializerMethodField()
 
     precio = serializers.DecimalField(
         source="precio_final",
@@ -315,6 +354,12 @@ class ProductoPublicoListaSerializer(serializers.ModelSerializer):
             "es_new_arrival",
             "permite_compra",
         ]
+
+    def get_stock_total(self, obj):
+        return int(obj.stock_total or 0)
+
+    def get_stock_disponible(self, obj):
+        return int(obj.stock_disponible or 0)
 
 
 class ProductoPublicoDetalleSerializer(ProductoPublicoListaSerializer):
