@@ -1,7 +1,8 @@
 import math
 
-from django.db.models import F, Prefetch, Q
+from django.db.models import Count, F, IntegerField, Prefetch, Q, Sum, Value
 from django.db.models.deletion import ProtectedError
+from django.db.models.functions import Coalesce, Lower, NullIf, Trim
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_page
 from rest_framework import permissions, status, viewsets
@@ -75,33 +76,29 @@ class PaginationMixin:
         }
 
 
-class ProductoViewSet(PaginationMixin, viewsets.ModelViewSet):
-    permission_classes = [permissions.AllowAny]
-    default_page_size = 40
-    max_page_size = 100
-    paginate_without_params = True
+class ProductoQueryMixin:
+    COLOR_NORMALIZADO = NullIf(Trim(Lower("variantes__color")), Value(""))
+    TALLA_NORMALIZADA = NullIf(Trim(Lower("variantes__talla")), Value(""))
 
-    LIST_ONLY_FIELDS = (
-        "id",
-        "codigo",
-        "titulo",
-        "sku",
-        "precio",
-        "precio_rebaja",
-        "categoria",
-        "estado",
-        "imagen_principal",
-        "costo",
-        "descripcion",
-    )
+    def _annotate_stock(self, queryset):
+        return queryset.annotate(
+            _stock_total=Coalesce(
+                Sum("variantes__stock"),
+                Value(0),
+                output_field=IntegerField(),
+            )
+        )
 
-    def get_serializer_class(self):
-        if self.action == "list":
-            return ProductoListaSerializer
-        return ProductoSerializer
-
-    def _base_queryset(self):
-        return Producto.objects.all()
+    def _annotate_resumen_admin(self, queryset):
+        return queryset.annotate(
+            _stock_total=Coalesce(
+                Sum("variantes__stock"),
+                Value(0),
+                output_field=IntegerField(),
+            ),
+            _total_colores=Count(self.COLOR_NORMALIZADO, distinct=True),
+            _total_tallas=Count(self.TALLA_NORMALIZADA, distinct=True),
+        )
 
     def _prefetch_detalle(self, queryset):
         return queryset.prefetch_related(
@@ -126,40 +123,38 @@ class ProductoViewSet(PaginationMixin, viewsets.ModelViewSet):
             ),
         )
 
-    def _prefetch_variantes_listado(self, items):
-        ids = [item.id for item in items]
-        if not ids:
-            return []
+    def _ordenar_por_ids(self, items, ids):
+        por_id = {item.id: item for item in items}
+        return [por_id[item_id] for item_id in ids if item_id in por_id]
 
-        productos = (
-            Producto.objects
-            .filter(id__in=ids)
-            .only(*self.LIST_ONLY_FIELDS)
-            .prefetch_related(
-                Prefetch(
-                    "variantes",
-                    queryset=VarianteProducto.objects.only(
-                        "id",
-                        "producto_id",
-                        "color",
-                        "talla",
-                        "stock",
-                    ),
-                )
-            )
-        )
 
-        por_id = {producto.id: producto for producto in productos}
-        return [por_id[item.id] for item in items if item.id in por_id]
+class ProductoViewSet(PaginationMixin, ProductoQueryMixin, viewsets.ModelViewSet):
+    permission_classes = [permissions.AllowAny]
+    default_page_size = 40
+    max_page_size = 100
+    paginate_without_params = True
 
-    def get_queryset(self):
-        queryset = self._base_queryset()
+    LIST_ONLY_FIELDS = (
+        "id",
+        "codigo",
+        "titulo",
+        "sku",
+        "precio",
+        "precio_rebaja",
+        "categoria",
+        "estado",
+        "imagen_principal",
+    )
 
+    def get_serializer_class(self):
         if self.action == "list":
-            queryset = queryset.only(*self.LIST_ONLY_FIELDS)
-        else:
-            queryset = self._prefetch_detalle(queryset)
+            return ProductoListaSerializer
+        return ProductoSerializer
 
+    def _base_queryset(self):
+        return Producto.objects.all()
+
+    def _aplicar_filtros(self, queryset):
         buscar = self.request.query_params.get("buscar", "").strip()
         tipo = self.request.query_params.get("tipo", "").strip().lower()
         categoria = self.request.query_params.get("categoria", "").strip()
@@ -192,19 +187,61 @@ class ProductoViewSet(PaginationMixin, viewsets.ModelViewSet):
 
         return queryset.order_by("-id")
 
+    def _get_list_queryset(self):
+        return self._aplicar_filtros(
+            self._base_queryset().only(
+                "id",
+                "titulo",
+                "sku",
+                "codigo",
+                "categoria",
+                "estado",
+            )
+        )
+
+    def _get_detail_queryset(self):
+        return self._prefetch_detalle(self._base_queryset())
+
+    def get_queryset(self):
+        if self.action == "list":
+            return self._get_list_queryset()
+        return self._get_detail_queryset().order_by("-id")
+
+    def _hidratar_listado(self, ids):
+        if not ids:
+            return []
+
+        items = (
+            Producto.objects
+            .filter(id__in=ids)
+            .only(*self.LIST_ONLY_FIELDS)
+            .order_by()
+            .annotate(
+                _stock_total=Coalesce(
+                    Sum("variantes__stock"),
+                    Value(0),
+                    output_field=IntegerField(),
+                ),
+                _total_colores=Count(self.COLOR_NORMALIZADO, distinct=True),
+                _total_tallas=Count(self.TALLA_NORMALIZADA, distinct=True),
+            )
+        )
+
+        return self._ordenar_por_ids(items, ids)
+
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
 
         if self._should_paginate():
-            page_items, meta = self._paginate_queryset(queryset)
-            page_items = list(page_items)
-            page_items = self._prefetch_variantes_listado(page_items)
+            page_queryset, meta = self._paginate_queryset(queryset.only("id"))
+            page_ids = list(page_queryset.values_list("id", flat=True))
+            items = self._hidratar_listado(page_ids)
 
-            serializer = self.get_serializer(page_items, many=True)
+            serializer = self.get_serializer(items, many=True)
             return Response({**meta, "results": serializer.data})
 
-        items = list(queryset)
-        items = self._prefetch_variantes_listado(items)
+        ids = list(queryset.values_list("id", flat=True))
+        items = self._hidratar_listado(ids)
         serializer = self.get_serializer(items, many=True)
         return Response(serializer.data)
 
@@ -227,7 +264,7 @@ class ProductoViewSet(PaginationMixin, viewsets.ModelViewSet):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class ProductoPublicoViewSet(PaginationMixin, viewsets.ReadOnlyModelViewSet):
+class ProductoPublicoViewSet(PaginationMixin, ProductoQueryMixin, viewsets.ReadOnlyModelViewSet):
     permission_classes = [permissions.AllowAny]
     default_page_size = 24
     max_page_size = 48
@@ -237,7 +274,6 @@ class ProductoPublicoViewSet(PaginationMixin, viewsets.ReadOnlyModelViewSet):
         "id",
         "codigo",
         "titulo",
-        "sku",
         "descripcion",
         "precio",
         "precio_rebaja",
@@ -245,7 +281,6 @@ class ProductoPublicoViewSet(PaginationMixin, viewsets.ReadOnlyModelViewSet):
         "imagen_principal",
         "es_new_arrival",
         "permite_compra",
-        "estado",
     )
 
     def get_serializer_class(self):
@@ -255,55 +290,6 @@ class ProductoPublicoViewSet(PaginationMixin, viewsets.ReadOnlyModelViewSet):
 
     def _base_public_queryset(self):
         return Producto.objects.filter(estado="Activo")
-
-    def _prefetch_detalle(self, queryset):
-        return queryset.prefetch_related(
-            Prefetch(
-                "imagenes",
-                queryset=ImagenProducto.objects.only(
-                    "id",
-                    "producto_id",
-                    "imagen",
-                    "orden",
-                ),
-            ),
-            Prefetch(
-                "variantes",
-                queryset=VarianteProducto.objects.only(
-                    "id",
-                    "producto_id",
-                    "color",
-                    "talla",
-                    "stock",
-                ),
-            ),
-        )
-
-    def _prefetch_variantes_listado(self, items):
-        ids = [item.id for item in items]
-        if not ids:
-            return []
-
-        productos = (
-            Producto.objects
-            .filter(id__in=ids)
-            .only(*self.PUBLIC_ONLY_FIELDS)
-            .prefetch_related(
-                Prefetch(
-                    "variantes",
-                    queryset=VarianteProducto.objects.only(
-                        "id",
-                        "producto_id",
-                        "color",
-                        "talla",
-                        "stock",
-                    ),
-                )
-            )
-        )
-
-        por_id = {producto.id: producto for producto in productos}
-        return [por_id[item.id] for item in items if item.id in por_id]
 
     def _aplicar_filtros(self, queryset):
         buscar = self.request.query_params.get("buscar", "").strip()
@@ -320,30 +306,57 @@ class ProductoPublicoViewSet(PaginationMixin, viewsets.ReadOnlyModelViewSet):
         if categoria:
             queryset = queryset.filter(categoria__iexact=categoria)
 
-        return queryset
+        return queryset.order_by("-id")
 
     def get_queryset(self):
         queryset = self._base_public_queryset()
 
         if self.action == "retrieve":
-            queryset = self._prefetch_detalle(queryset)
-        else:
-            queryset = queryset.only(*self.PUBLIC_ONLY_FIELDS)
+            return self._prefetch_detalle(queryset).order_by("-id")
 
-        return queryset.order_by("-id")
+        return self._aplicar_filtros(
+            queryset.only(
+                "id",
+                "titulo",
+                "codigo",
+                "categoria",
+                "estado",
+                "es_new_arrival",
+                "permite_compra",
+            )
+        )
+
+    def _hidratar_listado_publico(self, ids):
+        if not ids:
+            return []
+
+        items = (
+            Producto.objects
+            .filter(id__in=ids)
+            .only(*self.PUBLIC_ONLY_FIELDS)
+            .order_by()
+            .annotate(
+                _stock_total=Coalesce(
+                    Sum("variantes__stock"),
+                    Value(0),
+                    output_field=IntegerField(),
+                )
+            )
+        )
+
+        return self._ordenar_por_ids(items, ids)
 
     def _build_paginated_public_response(self, queryset):
-        page_items, meta = self._paginate_queryset(queryset)
-        page_items = list(page_items)
-        page_items = self._prefetch_variantes_listado(page_items)
+        page_queryset, meta = self._paginate_queryset(queryset.only("id"))
+        page_ids = list(page_queryset.values_list("id", flat=True))
+        items = self._hidratar_listado_publico(page_ids)
 
-        serializer = self.get_serializer(page_items, many=True)
+        serializer = self.get_serializer(items, many=True)
         return Response({**meta, "results": serializer.data})
 
     @method_decorator(cache_page(60 * 5))
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset()).filter(es_new_arrival=False)
-        queryset = self._aplicar_filtros(queryset)
 
         solo_disponibles = request.query_params.get(
             "solo_disponibles",
@@ -368,7 +381,7 @@ class ProductoPublicoViewSet(PaginationMixin, viewsets.ReadOnlyModelViewSet):
     @method_decorator(cache_page(60 * 5))
     @action(detail=False, methods=["get"], url_path="rebajas")
     def rebajas(self, request):
-        queryset = self.get_queryset().filter(
+        queryset = self._base_public_queryset().filter(
             es_new_arrival=False,
             precio_rebaja__isnull=False,
             precio_rebaja__gt=0,
@@ -389,8 +402,9 @@ class ProductoPublicoViewSet(PaginationMixin, viewsets.ReadOnlyModelViewSet):
     @method_decorator(cache_page(60 * 5))
     @action(detail=False, methods=["get"], url_path="new-arrivals")
     def new_arrivals(self, request):
-        queryset = self.get_queryset().filter(es_new_arrival=True)
-        queryset = self._aplicar_filtros(queryset)
+        queryset = self._aplicar_filtros(
+            self._base_public_queryset().filter(es_new_arrival=True)
+        )
         return self._build_paginated_public_response(queryset)
 
     @method_decorator(cache_page(60 * 10))

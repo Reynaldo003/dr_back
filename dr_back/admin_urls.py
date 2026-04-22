@@ -1,3 +1,4 @@
+#dr_back/admin_urls.py
 from django.urls import path
 
 from .admin_views import AdminLoginAPIView, AdminLogoutAPIView, AdminMeAPIView

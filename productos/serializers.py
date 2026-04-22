@@ -62,9 +62,17 @@ class ProductoListaSerializer(serializers.ModelSerializer):
         )
 
     def get_stock_total(self, obj):
+        stock_anotado = getattr(obj, "_stock_total", None)
+        if stock_anotado is not None:
+            return int(stock_anotado or 0)
+
         return int(obj.stock_total or 0)
 
     def get_total_colores(self, obj):
+        total_anotado = getattr(obj, "_total_colores", None)
+        if total_anotado is not None:
+            return int(total_anotado or 0)
+
         variantes = self._obtener_variantes(obj)
         return len(
             {
@@ -75,6 +83,10 @@ class ProductoListaSerializer(serializers.ModelSerializer):
         )
 
     def get_total_tallas(self, obj):
+        total_anotado = getattr(obj, "_total_tallas", None)
+        if total_anotado is not None:
+            return int(total_anotado or 0)
+
         variantes = self._obtener_variantes(obj)
         return len(
             {
@@ -139,9 +151,17 @@ class ProductoSerializer(serializers.ModelSerializer):
         ]
 
     def get_stock_total(self, obj):
+        stock_anotado = getattr(obj, "_stock_total", None)
+        if stock_anotado is not None:
+            return int(stock_anotado or 0)
+
         return int(obj.stock_total or 0)
 
     def get_stock_disponible(self, obj):
+        stock_anotado = getattr(obj, "_stock_total", None)
+        if stock_anotado is not None:
+            return int(stock_anotado or 0)
+
         return int(obj.stock_disponible or 0)
 
     def validate_sku(self, value):
@@ -356,9 +376,17 @@ class ProductoPublicoListaSerializer(serializers.ModelSerializer):
         ]
 
     def get_stock_total(self, obj):
+        stock_anotado = getattr(obj, "_stock_total", None)
+        if stock_anotado is not None:
+            return int(stock_anotado or 0)
+
         return int(obj.stock_total or 0)
 
     def get_stock_disponible(self, obj):
+        stock_anotado = getattr(obj, "_stock_total", None)
+        if stock_anotado is not None:
+            return int(stock_anotado or 0)
+
         return int(obj.stock_disponible or 0)
 
 
