@@ -1,4 +1,3 @@
-#ventas/serializers.py
 from decimal import Decimal
 
 from rest_framework import serializers
@@ -143,11 +142,23 @@ class VentaSerializer(serializers.ModelSerializer):
             "referencias_envio": obj.cliente_direccion.referencias_envio,
         }
 
+    def _venta_queda_pagada(self, attrs):
+        instance = getattr(self, "instance", None)
+        estado = str(
+            attrs.get("estado", getattr(instance, "estado", "PENDIENTE"))
+            or "PENDIENTE"
+        ).strip().upper()
+        return estado == "PAGADA"
+
     def _obtener_stock_extra_por_edicion(self):
         stock_extra = {}
         instance = getattr(self, "instance", None)
 
         if not instance:
+            return stock_extra
+
+        # Solo cuenta como stock extra si la venta realmente ya había descontado inventario.
+        if not bool(getattr(instance, "inventario_descontado", False)):
             return stock_extra
 
         for detalle in instance.detalles.all():
@@ -156,28 +167,34 @@ class VentaSerializer(serializers.ModelSerializer):
                 (detalle.color or "").strip().lower(),
                 (detalle.talla or "").strip().lower(),
             )
-            stock_extra[llave] = stock_extra.get(llave, 0) + detalle.cantidad
+            stock_extra[llave] = stock_extra.get(llave, 0) + int(detalle.cantidad or 0)
 
         return stock_extra
 
-    def validate_detalles(self, value):
-        if not value:
-            raise serializers.ValidationError("La venta debe tener al menos un producto.")
+    def _validar_detalles(self, detalles, validar_stock):
+        if not detalles:
+            raise serializers.ValidationError(
+                {"detalles": "La venta debe tener al menos un producto."}
+            )
 
         acumulado = {}
         producto_ids = set()
 
-        for item in value:
+        for item in detalles:
             producto_id = item["producto_id"]
             color = str(item.get("color") or "").strip()
             talla = str(item.get("talla") or "").strip()
             cantidad = int(item.get("cantidad") or 0)
 
             if cantidad <= 0:
-                raise serializers.ValidationError("Todas las cantidades deben ser mayores a cero.")
+                raise serializers.ValidationError(
+                    {"detalles": "Todas las cantidades deben ser mayores a cero."}
+                )
 
             if not color or not talla:
-                raise serializers.ValidationError("Cada detalle debe incluir color y talla.")
+                raise serializers.ValidationError(
+                    {"detalles": "Cada detalle debe incluir color y talla."}
+                )
 
             llave = (producto_id, color.lower(), talla.lower())
             acumulado[llave] = acumulado.get(llave, 0) + cantidad
@@ -191,35 +208,57 @@ class VentaSerializer(serializers.ModelSerializer):
         variantes = {
             (
                 v.producto_id,
-                v.color.strip().lower(),
-                v.talla.strip().lower(),
+                (v.color or "").strip().lower(),
+                (v.talla or "").strip().lower(),
             ): v
             for v in VarianteProducto.objects.filter(producto_id__in=producto_ids)
         }
 
-        stock_extra = self._obtener_stock_extra_por_edicion()
+        stock_extra = self._obtener_stock_extra_por_edicion() if validar_stock else {}
 
         for llave, cantidad in acumulado.items():
             producto_id, color, talla = llave
             producto = productos.get(producto_id)
 
             if not producto:
-                raise serializers.ValidationError(f"El producto {producto_id} no existe.")
+                raise serializers.ValidationError(
+                    {"detalles": f"El producto {producto_id} no existe."}
+                )
 
             variante = variantes.get(llave)
             if not variante:
                 raise serializers.ValidationError(
-                    f"No existe la variante {producto.titulo} / {color} / {talla}."
+                    {
+                        "detalles": (
+                            f"No existe la variante {producto.titulo} / {color} / {talla}."
+                        )
+                    }
                 )
 
-            disponible = int(variante.stock or 0) + stock_extra.get(llave, 0)
+            if validar_stock:
+                disponible = int(variante.stock or 0) + int(stock_extra.get(llave, 0))
 
-            if cantidad > disponible:
-                raise serializers.ValidationError(
-                    f"Stock insuficiente para {producto.titulo} / {variante.color} / {variante.talla}. Disponible: {disponible}."
-                )
+                if cantidad > disponible:
+                    raise serializers.ValidationError(
+                        {
+                            "detalles": (
+                                f"Stock insuficiente para {producto.titulo} / "
+                                f"{variante.color} / {variante.talla}. "
+                                f"Disponible: {disponible}."
+                            )
+                        }
+                    )
 
-        return value
+    def validate(self, attrs):
+        detalles = attrs.get("detalles", None)
+
+        if detalles is not None:
+            self._validar_detalles(
+                detalles=detalles,
+                validar_stock=self._venta_queda_pagada(attrs),
+            )
+
+        return attrs
 
     def _crear_detalles_y_totales(self, venta, detalles_data):
         subtotal = Decimal("0.00")
@@ -235,7 +274,7 @@ class VentaSerializer(serializers.ModelSerializer):
             producto = productos.get(item["producto_id"])
             if not producto:
                 raise serializers.ValidationError(
-                    f"El producto {item['producto_id']} no existe."
+                    {"detalles": f"El producto {item['producto_id']} no existe."}
                 )
 
             cantidad = int(item["cantidad"])
@@ -334,7 +373,10 @@ class CheckoutMercadoPagoSerializer(serializers.Serializer):
             producto_id = item["producto_id"]
             color = str(item.get("color") or "").strip()
             talla = str(item.get("talla") or "").strip()
-            cantidad = int(item["cantidad"])
+            cantidad = int(item.get("cantidad") or 0)
+
+            if cantidad <= 0:
+                raise serializers.ValidationError("Todas las cantidades deben ser mayores a cero.")
 
             if not color or not talla:
                 raise serializers.ValidationError("Cada producto debe incluir color y talla.")
@@ -351,8 +393,8 @@ class CheckoutMercadoPagoSerializer(serializers.Serializer):
         variantes = {
             (
                 v.producto_id,
-                v.color.strip().lower(),
-                v.talla.strip().lower(),
+                (v.color or "").strip().lower(),
+                (v.talla or "").strip().lower(),
             ): v
             for v in VarianteProducto.objects.filter(producto_id__in=producto_ids)
         }
