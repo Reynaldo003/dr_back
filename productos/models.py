@@ -1,4 +1,3 @@
-#productos/models.py
 from decimal import Decimal
 
 from django.db import models
@@ -109,14 +108,30 @@ class Producto(models.Model):
         total = self.stock_total
         cambios = {}
 
+        # Los new arrivals deben poder mostrarse en web aunque aún no tengan stock.
+        if self.es_new_arrival:
+            if self.permite_compra:
+                cambios["permite_compra"] = False
+
+            if forzar_activo and self.estado != "Activo":
+                cambios["estado"] = "Activo"
+
+            if cambios:
+                Producto.objects.filter(pk=self.pk).update(**cambios)
+                for campo, valor in cambios.items():
+                    setattr(self, campo, valor)
+            return
+
         if total <= 0:
-            cambios["estado"] = "Inactivo"
-            cambios["permite_compra"] = False
+            if self.estado != "Inactivo":
+                cambios["estado"] = "Inactivo"
+            if self.permite_compra:
+                cambios["permite_compra"] = False
         else:
-            if not self.es_new_arrival:
+            if not self.permite_compra:
                 cambios["permite_compra"] = True
 
-            if forzar_activo:
+            if forzar_activo or self.estado != "Activo":
                 cambios["estado"] = "Activo"
 
         if cambios:

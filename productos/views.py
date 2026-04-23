@@ -1,4 +1,5 @@
 import math
+
 from django.db.models import Count, F, IntegerField, Prefetch, Q, Sum, Value
 from django.db.models.deletion import ProtectedError
 from django.db.models.functions import Coalesce, Lower, NullIf, Trim
@@ -145,6 +146,8 @@ class ProductoViewSet(PaginationMixin, ProductoQueryMixin, viewsets.ModelViewSet
         "estado",
         "imagen_principal",
         "imagen_principal_thumb",
+        "es_new_arrival",
+        "permite_compra",
     )
 
     def get_serializer_class(self):
@@ -199,6 +202,8 @@ class ProductoViewSet(PaginationMixin, ProductoQueryMixin, viewsets.ModelViewSet
                 "estado",
                 "imagen_principal",
                 "imagen_principal_thumb",
+                "es_new_arrival",
+                "permite_compra",
             )
         )
 
@@ -227,6 +232,18 @@ class ProductoViewSet(PaginationMixin, ProductoQueryMixin, viewsets.ModelViewSet
                 ),
                 _total_colores=Count(self.COLOR_NORMALIZADO, distinct=True),
                 _total_tallas=Count(self.TALLA_NORMALIZADA, distinct=True),
+            )
+            .prefetch_related(
+                Prefetch(
+                    "variantes",
+                    queryset=VarianteProducto.objects.only(
+                        "id",
+                        "producto_id",
+                        "color",
+                        "talla",
+                        "stock",
+                    ),
+                )
             )
         )
 

@@ -29,6 +29,11 @@ class ProductoListaSerializer(serializers.ModelSerializer):
     total_colores = serializers.SerializerMethodField()
     total_tallas = serializers.SerializerMethodField()
     imagen_principal = serializers.SerializerMethodField()
+    variantes = serializers.SerializerMethodField()
+    en_rebaja = serializers.BooleanField(read_only=True)
+    porcentaje_descuento = serializers.IntegerField(read_only=True)
+    es_new_arrival = serializers.BooleanField(read_only=True)
+    permite_compra = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = Producto
@@ -45,6 +50,11 @@ class ProductoListaSerializer(serializers.ModelSerializer):
             "stock_total",
             "total_colores",
             "total_tallas",
+            "variantes",
+            "en_rebaja",
+            "porcentaje_descuento",
+            "es_new_arrival",
+            "permite_compra",
         ]
 
     def get_imagen_principal(self, obj):
@@ -65,6 +75,10 @@ class ProductoListaSerializer(serializers.ModelSerializer):
                 "stock",
             )
         )
+
+    def get_variantes(self, obj):
+        variantes = self._obtener_variantes(obj)
+        return VarianteProductoSerializer(variantes, many=True).data
 
     def get_stock_total(self, obj):
         stock_anotado = getattr(obj, "_stock_total", None)
@@ -247,6 +261,22 @@ class ProductoSerializer(serializers.ModelSerializer):
 
         return variantes_limpias
 
+    def _obtener_variantes_para_validacion(self, attrs):
+        if "variantes" in attrs:
+            return attrs.get("variantes") or []
+
+        if self.instance:
+            return [
+                {
+                    "color": item.color,
+                    "talla": item.talla,
+                    "stock": int(item.stock or 0),
+                }
+                for item in self.instance.variantes.all()
+            ]
+
+        return []
+
     def validate(self, attrs):
         precio = attrs.get("precio", getattr(self.instance, "precio", None))
         precio_rebaja = attrs.get(
@@ -257,6 +287,20 @@ class ProductoSerializer(serializers.ModelSerializer):
             "es_new_arrival",
             getattr(self.instance, "es_new_arrival", False),
         )
+        permite_compra = attrs.get(
+            "permite_compra",
+            getattr(self.instance, "permite_compra", True),
+        )
+        categoria = str(
+            attrs.get("categoria", getattr(self.instance, "categoria", "")) or ""
+        ).strip()
+        imagen_principal = str(
+            attrs.get(
+                "imagen_principal",
+                getattr(self.instance, "imagen_principal", ""),
+            )
+            or ""
+        ).strip()
 
         if precio_rebaja is not None and precio is not None and precio_rebaja >= precio:
             raise serializers.ValidationError(
@@ -266,6 +310,33 @@ class ProductoSerializer(serializers.ModelSerializer):
         if es_new_arrival:
             attrs["permite_compra"] = False
             attrs["precio_rebaja"] = None
+            return attrs
+
+        if bool(permite_compra):
+            variantes_fuente = self._obtener_variantes_para_validacion(attrs)
+            stock_total_validacion = sum(
+                int(item.get("stock") or 0) for item in variantes_fuente
+            )
+
+            if not categoria:
+                raise serializers.ValidationError(
+                    {"categoria": "La categoría es obligatoria para publicar en catálogo."}
+                )
+
+            if not imagen_principal:
+                raise serializers.ValidationError(
+                    {"imagen_principal": "La imagen principal es obligatoria para publicar en catálogo."}
+                )
+
+            if not variantes_fuente:
+                raise serializers.ValidationError(
+                    {"variantes": "Debes capturar al menos una variante para publicar en catálogo."}
+                )
+
+            if stock_total_validacion <= 0:
+                raise serializers.ValidationError(
+                    {"variantes": "El stock total debe ser mayor a 0 para publicar en catálogo."}
+                )
 
         return attrs
 
@@ -348,7 +419,7 @@ class ProductoSerializer(serializers.ModelSerializer):
         self._crear_imagenes(producto, imagenes_data)
         self._crear_variantes(producto, variantes_data)
 
-        producto.sincronizar_disponibilidad()
+        producto.sincronizar_disponibilidad(forzar_activo=not producto.es_new_arrival)
         return self._recargar_producto(producto.id)
 
     @transaction.atomic
@@ -374,7 +445,7 @@ class ProductoSerializer(serializers.ModelSerializer):
             instance.variantes.all().delete()
             self._crear_variantes(instance, variantes_data)
 
-        instance.sincronizar_disponibilidad()
+        instance.sincronizar_disponibilidad(forzar_activo=not instance.es_new_arrival)
         return self._recargar_producto(instance.id)
 
 
