@@ -108,31 +108,15 @@ class Producto(models.Model):
         total = self.stock_total
         cambios = {}
 
-        # Los new arrivals deben poder mostrarse en web aunque aún no tengan stock.
+        # Ya no forzamos el estado automáticamente.
+        # El estado lo controla el admin desde el modal.
         if self.es_new_arrival:
-            if self.permite_compra:
-                cambios["permite_compra"] = False
-
-            if forzar_activo and self.estado != "Activo":
-                cambios["estado"] = "Activo"
-
-            if cambios:
-                Producto.objects.filter(pk=self.pk).update(**cambios)
-                for campo, valor in cambios.items():
-                    setattr(self, campo, valor)
-            return
-
-        if total <= 0:
-            if self.estado != "Inactivo":
-                cambios["estado"] = "Inactivo"
-            if self.permite_compra:
-                cambios["permite_compra"] = False
+            debe_permitir_compra = False
         else:
-            if not self.permite_compra:
-                cambios["permite_compra"] = True
+            debe_permitir_compra = self.estado == "Activo" and total > 0
 
-            if forzar_activo or self.estado != "Activo":
-                cambios["estado"] = "Activo"
+        if self.permite_compra != debe_permitir_compra:
+            cambios["permite_compra"] = debe_permitir_compra
 
         if cambios:
             Producto.objects.filter(pk=self.pk).update(**cambios)
@@ -145,6 +129,9 @@ class Producto(models.Model):
         if self.es_new_arrival:
             self.permite_compra = False
             self.precio_rebaja = None
+        else:
+            total = self.stock_total if self.pk else 0
+            self.permite_compra = self.estado == "Activo" and total > 0
 
         if self.precio_rebaja is not None and self.precio_rebaja <= 0:
             self.precio_rebaja = None
@@ -155,7 +142,6 @@ class Producto(models.Model):
             codigo = f"P-{self.pk:04d}"
             Producto.objects.filter(pk=self.pk).update(codigo=codigo)
             self.codigo = codigo
-
 
 class ImagenProducto(models.Model):
     producto = models.ForeignKey(
