@@ -1,5 +1,4 @@
 import math
-
 from django.db.models import Count, F, IntegerField, Prefetch, Q, Sum, Value
 from django.db.models.deletion import ProtectedError
 from django.db.models.functions import Coalesce, Lower, NullIf, Trim
@@ -108,6 +107,7 @@ class ProductoQueryMixin:
                     "id",
                     "producto_id",
                     "imagen",
+                    "imagen_thumb",
                     "orden",
                 ),
             ),
@@ -144,6 +144,7 @@ class ProductoViewSet(PaginationMixin, ProductoQueryMixin, viewsets.ModelViewSet
         "categoria",
         "estado",
         "imagen_principal",
+        "imagen_principal_thumb",
     )
 
     def get_serializer_class(self):
@@ -196,6 +197,8 @@ class ProductoViewSet(PaginationMixin, ProductoQueryMixin, viewsets.ModelViewSet
                 "codigo",
                 "categoria",
                 "estado",
+                "imagen_principal",
+                "imagen_principal_thumb",
             )
         )
 
@@ -279,6 +282,7 @@ class ProductoPublicoViewSet(PaginationMixin, ProductoQueryMixin, viewsets.ReadO
         "precio_rebaja",
         "categoria",
         "imagen_principal",
+        "imagen_principal_thumb",
         "es_new_arrival",
         "permite_compra",
     )
@@ -312,7 +316,22 @@ class ProductoPublicoViewSet(PaginationMixin, ProductoQueryMixin, viewsets.ReadO
         queryset = self._base_public_queryset()
 
         if self.action == "retrieve":
-            return self._prefetch_detalle(queryset).order_by("-id")
+            return self._prefetch_detalle(
+                queryset.only(
+                    "id",
+                    "codigo",
+                    "titulo",
+                    "descripcion",
+                    "precio",
+                    "precio_rebaja",
+                    "categoria",
+                    "imagen_principal",
+                    "imagen_principal_thumb",
+                    "estado",
+                    "es_new_arrival",
+                    "permite_compra",
+                )
+            ).order_by("-id")
 
         return self._aplicar_filtros(
             queryset.only(
@@ -321,6 +340,8 @@ class ProductoPublicoViewSet(PaginationMixin, ProductoQueryMixin, viewsets.ReadO
                 "codigo",
                 "categoria",
                 "estado",
+                "imagen_principal",
+                "imagen_principal_thumb",
                 "es_new_arrival",
                 "permite_compra",
             )

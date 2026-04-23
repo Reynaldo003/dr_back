@@ -36,6 +36,7 @@ class Producto(models.Model):
         db_index=True,
     )
     imagen_principal = models.TextField(blank=True, default="")
+    imagen_principal_thumb = models.TextField(blank=True, default="")
     stock_vendido = models.PositiveIntegerField(default=0)
 
     es_new_arrival = models.BooleanField(default=False, db_index=True)
@@ -148,6 +149,7 @@ class ImagenProducto(models.Model):
         related_name="imagenes",
     )
     imagen = models.TextField()
+    imagen_thumb = models.TextField(blank=True, default="")
     orden = models.PositiveIntegerField(default=0)
 
     class Meta:

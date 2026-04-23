@@ -1,13 +1,14 @@
 from django.db import transaction
 from rest_framework import serializers
 
+from .image_utils import preparar_imagen_galeria, preparar_imagen_principal
 from .models import ImagenProducto, Producto, VarianteProducto
 
 
 class ImagenProductoSerializer(serializers.ModelSerializer):
     class Meta:
         model = ImagenProducto
-        fields = ["id", "imagen", "orden"]
+        fields = ["id", "imagen", "imagen_thumb", "orden"]
 
 
 class VarianteProductoSerializer(serializers.ModelSerializer):
@@ -27,6 +28,7 @@ class ProductoListaSerializer(serializers.ModelSerializer):
     )
     total_colores = serializers.SerializerMethodField()
     total_tallas = serializers.SerializerMethodField()
+    imagen_principal = serializers.SerializerMethodField()
 
     class Meta:
         model = Producto
@@ -44,6 +46,9 @@ class ProductoListaSerializer(serializers.ModelSerializer):
             "total_colores",
             "total_tallas",
         ]
+
+    def get_imagen_principal(self, obj):
+        return obj.imagen_principal_thumb or obj.imagen_principal
 
     def _obtener_variantes(self, obj):
         cache_prefetch = getattr(obj, "_prefetched_objects_cache", {})
@@ -127,6 +132,7 @@ class ProductoSerializer(serializers.ModelSerializer):
             "categoria",
             "estado",
             "imagen_principal",
+            "imagen_principal_thumb",
             "imagenes",
             "variantes",
             "stock_total",
@@ -146,6 +152,7 @@ class ProductoSerializer(serializers.ModelSerializer):
             "precio_final",
             "porcentaje_descuento",
             "en_rebaja",
+            "imagen_principal_thumb",
             "fecha_creacion",
             "fecha_actualizacion",
         ]
@@ -262,18 +269,43 @@ class ProductoSerializer(serializers.ModelSerializer):
 
         return attrs
 
+    def _preparar_imagen_principal(self, imagen):
+        original, thumb = preparar_imagen_principal(imagen)
+        return {
+            "imagen_principal": original,
+            "imagen_principal_thumb": thumb,
+        }
+
+    def _normalizar_imagenes(self, imagenes_data):
+        imagenes = []
+
+        for item in imagenes_data or []:
+            original, thumb = preparar_imagen_galeria(item["imagen"])
+            imagenes.append(
+                {
+                    "imagen": original,
+                    "imagen_thumb": thumb,
+                    "orden": int(item.get("orden") or 0),
+                }
+            )
+
+        return imagenes
+
     def _crear_imagenes(self, producto, imagenes_data):
         if not imagenes_data:
             return
+
+        imagenes_normalizadas = self._normalizar_imagenes(imagenes_data)
 
         ImagenProducto.objects.bulk_create(
             [
                 ImagenProducto(
                     producto=producto,
                     imagen=item["imagen"],
+                    imagen_thumb=item["imagen_thumb"],
                     orden=int(item.get("orden") or 0),
                 )
-                for item in imagenes_data
+                for item in imagenes_normalizadas
             ],
             batch_size=200,
         )
@@ -307,6 +339,10 @@ class ProductoSerializer(serializers.ModelSerializer):
         imagenes_data = validated_data.pop("imagenes", [])
         variantes_data = validated_data.pop("variantes", [])
 
+        validated_data.update(
+            self._preparar_imagen_principal(validated_data.get("imagen_principal", ""))
+        )
+
         producto = Producto.objects.create(**validated_data)
 
         self._crear_imagenes(producto, imagenes_data)
@@ -319,6 +355,11 @@ class ProductoSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         imagenes_data = validated_data.pop("imagenes", None)
         variantes_data = validated_data.pop("variantes", None)
+
+        if "imagen_principal" in validated_data:
+            validated_data.update(
+                self._preparar_imagen_principal(validated_data.get("imagen_principal", ""))
+            )
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
@@ -340,6 +381,7 @@ class ProductoSerializer(serializers.ModelSerializer):
 class ProductoPublicoListaSerializer(serializers.ModelSerializer):
     stock_total = serializers.SerializerMethodField()
     stock_disponible = serializers.SerializerMethodField()
+    imagen_principal = serializers.SerializerMethodField()
 
     precio = serializers.DecimalField(
         source="precio_final",
@@ -375,6 +417,9 @@ class ProductoPublicoListaSerializer(serializers.ModelSerializer):
             "permite_compra",
         ]
 
+    def get_imagen_principal(self, obj):
+        return obj.imagen_principal_thumb or obj.imagen_principal
+
     def get_stock_total(self, obj):
         stock_anotado = getattr(obj, "_stock_total", None)
         if stock_anotado is not None:
@@ -391,11 +436,14 @@ class ProductoPublicoListaSerializer(serializers.ModelSerializer):
 
 
 class ProductoPublicoDetalleSerializer(ProductoPublicoListaSerializer):
+    imagen_principal = serializers.CharField(read_only=True)
+    imagen_principal_thumb = serializers.CharField(read_only=True)
     imagenes = ImagenProductoSerializer(many=True, read_only=True)
     variantes = VarianteProductoSerializer(many=True, read_only=True)
 
     class Meta(ProductoPublicoListaSerializer.Meta):
         fields = ProductoPublicoListaSerializer.Meta.fields + [
+            "imagen_principal_thumb",
             "imagenes",
             "variantes",
         ]
